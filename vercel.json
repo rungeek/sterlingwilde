@@ -1,0 +1,6 @@
+{
+  "rewrites": [
+    { "source": "/madness", "destination": "https://madness-2026.vercel.app" },
+    { "source": "/madness/(.*)", "destination": "https://madness-2026.vercel.app/$1" }
+  ]
+}
