@@ -203,3 +203,34 @@ class SynthesisOutput(BaseModel):
     issues: list[IssueDraft]
     review_markdown: str
     context_cartridge_markdown: str
+
+
+# ---------------------------------------------------------------------------
+# Reviewer overrides
+# ---------------------------------------------------------------------------
+
+
+class ObservationOverride(BaseModel):
+    """A reviewer's adjustment to a single observation.
+
+    Any field left as `None` means "leave the original value alone". `suppressed`
+    drops the observation entirely from synthesis. `approved` records explicit
+    human verification — useful when a reviewer wants to mark something as
+    correct without changing it.
+    """
+
+    observation_id: str
+    suppressed: bool = False
+    approved: bool = False
+    kind: FeedbackKind | None = None
+    sentiment: Sentiment | None = None
+    summary: str | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    implementation_hint: str | None = None
+    reviewer_note: str | None = None
+
+
+class OverrideSet(BaseModel):
+    overrides: list[ObservationOverride] = Field(default_factory=list)
+    edited_at: datetime | None = None
+    reviewer: str | None = None

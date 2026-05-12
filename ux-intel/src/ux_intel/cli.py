@@ -18,6 +18,7 @@ prompt without paying for transcription twice).
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import click
@@ -26,8 +27,10 @@ from . import align as align_stage
 from . import analyze as analyze_stage
 from . import frames as frames_stage
 from . import ingest as ingest_stage
+from . import review as review_mod
 from . import synthesize as synthesize_stage
 from . import transcribe as transcribe_stage
+from . import watch as watch_mod
 from .session import ALL_STAGES, Session, STAGE_DEPENDENCIES
 
 
@@ -113,12 +116,54 @@ def analyze(session_dir: Path, effort: str) -> None:
 @cli.command()
 @click.argument("session_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("--effort", default="high", type=click.Choice(["low", "medium", "high", "max", "xhigh"]))
-def synthesize(session_dir: Path, effort: str) -> None:
+@click.option(
+    "--apply-overrides",
+    is_flag=True,
+    help="If outputs/overrides.json exists, apply reviewer corrections before synthesizing.",
+)
+def synthesize(session_dir: Path, effort: str, apply_overrides: bool) -> None:
     session = Session.load(session_dir)
-    output = synthesize_stage.run(session, effort=effort)
+    output = synthesize_stage.run(session, effort=effort, apply_overrides=apply_overrides)
     click.echo(f"synthesize done: {len(output.clusters)} clusters, {len(output.issues)} issues")
     click.echo(f"  review:    {session.review_path}")
     click.echo(f"  cartridge: {session.cartridge_path}")
+
+
+@cli.command()
+@click.argument("session_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def review(session_dir: Path) -> None:
+    """Generate (or regenerate) the self-contained review.html for SESSION_DIR."""
+    session = Session.load(session_dir)
+    path = review_mod.generate(session)
+    click.echo(f"review html: {path}")
+
+
+@cli.command()
+@click.argument("watch_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--sessions-root", type=click.Path(path_type=Path), default=Path("sessions"))
+@click.option("--interval", default=watch_mod.DEFAULT_INTERVAL_S, type=float, help="Poll interval in seconds.")
+@click.option("--effort", default="high", type=click.Choice(["low", "medium", "high", "max", "xhigh"]))
+@click.option(
+    "--process-existing",
+    is_flag=True,
+    help="By default, files already in WATCH_DIR are ignored on startup. Use this flag to process them too.",
+)
+def watch(watch_dir: Path, sessions_root: Path, interval: float, effort: str, process_existing: bool) -> None:
+    """Watch WATCH_DIR for new screen recordings and process them automatically.
+
+    Intended for syncing capture flows: drop your iPhone screen recording into
+    a synced folder (Dropbox, iCloud, Google Drive) that points at WATCH_DIR
+    and the pipeline runs end-to-end including review.html generation.
+    """
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    watcher = watch_mod.Watcher(
+        watch_dir=watch_dir,
+        sessions_root=sessions_root,
+        interval_s=interval,
+        effort=effort,
+        process_existing=process_existing,
+    )
+    watcher.run()
 
 
 @cli.command()
@@ -159,8 +204,13 @@ def _run_full(session: Session, effort: str) -> None:
     analyze_stage.run(session, effort=effort)
     click.echo("-> synthesize")
     synthesize_stage.run(session, effort=effort)
+    click.echo("-> review")
+    review_mod.generate(session)
     click.echo("")
-    click.echo(f"done. review: {session.review_path}")
+    click.echo(f"done.")
+    click.echo(f"  review.md:   {session.review_path}")
+    click.echo(f"  review.html: {session.review_html_path}")
+    click.echo(f"  cartridge:   {session.cartridge_path}")
 
 
 if __name__ == "__main__":

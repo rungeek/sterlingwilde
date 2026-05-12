@@ -17,6 +17,7 @@ import os
 
 import anthropic
 
+from . import overrides as overrides_mod
 from .prompts import CLUSTER_SYSTEM_PROMPT
 from .schemas import (
     Cluster,
@@ -90,12 +91,19 @@ def run(
     model: str = MODEL,
     api_key: str | None = None,
     effort: str = "high",
+    apply_overrides: bool = False,
 ) -> SynthesisOutput:
     session.require_dependencies(STAGE_SYNTHESIZE)
     session.mark_running(STAGE_SYNTHESIZE)
     try:
         client = anthropic.Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
         obs_set = ObservationSet.model_validate_json(session.observations_path.read_text())
+
+        override_note = None
+        if apply_overrides:
+            overrides = overrides_mod.load_overrides(session.overrides_path)
+            obs_set = overrides_mod.apply_overrides(obs_set, overrides)
+            override_note = overrides_mod.summarize(overrides)
 
         if not obs_set.observations:
             raise RuntimeError("No observations to synthesize. Re-run the analyze stage.")
@@ -138,10 +146,10 @@ def run(
         session.review_path.write_text(output.review_markdown)
         session.cartridge_path.write_text(output.context_cartridge_markdown)
 
-        session.mark_completed(
-            STAGE_SYNTHESIZE,
-            notes=f"{len(clusters)} clusters, {len(issues)} draft issues",
-        )
+        notes = f"{len(clusters)} clusters, {len(issues)} draft issues"
+        if override_note is not None:
+            notes += f"; {override_note}"
+        session.mark_completed(STAGE_SYNTHESIZE, notes=notes)
         return output
     except Exception as exc:
         session.mark_failed(STAGE_SYNTHESIZE, str(exc))

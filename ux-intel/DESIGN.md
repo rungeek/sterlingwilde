@@ -24,6 +24,20 @@ can be traced back to a timestamp, a transcript line, and a frame.
 Non-goals (for now): real-time analysis, multi-speaker diarization, direct
 GitHub/Linear integration, browser-based recording UI, multi-language support.
 
+## Capture and processing surfaces
+
+Two ways to feed videos into the pipeline:
+
+1. **One-shot CLI:** `ux-intel run video.mp4` for a single recording.
+2. **Folder watcher:** `ux-intel watch ~/CapturedRecordings` polls a directory
+   and processes anything new. The intended capture loop is iPhone screen
+   recording → cloud sync (iCloud/Dropbox/Drive) → that synced folder. The
+   watcher requires a file's size and mtime to be stable across two consecutive
+   polls before processing — cloud syncs often write in chunks and inotify
+   fires before the file is complete.
+
+Both produce the same session artifact tree.
+
 ## Architecture
 
 A stage-based pipeline. Each stage reads the session directory, writes its
@@ -58,7 +72,17 @@ transcription twice.
    │  6. synthesize   │  cluster, generate review.md, issues.json, context cartridge
    └────────┬─────────┘
             │
+   ┌────────▼─────────┐
+   │  7. review       │  emit self-contained review.html (timeline + edits)
+   └────────┬─────────┘
+            │
        outputs/
+            │
+       (human review in browser → corrections downloaded as overrides.json)
+            │
+   ┌────────▼─────────────────────────────┐
+   │ ux-intel synthesize --apply-overrides │  re-synthesize with corrections
+   └───────────────────────────────────────┘
 ```
 
 ### Session layout
@@ -78,9 +102,11 @@ sessions/<session-id>/
     observations.json         # per-moment structured observations
   outputs/
     review.md                 # human-readable review
+    review.html               # self-contained interactive review (timeline + edits)
     issues.json               # draft issue candidates
     clusters.json             # grouped themes
     context.md                # implementation-oriented cartridge for AI agents
+    overrides.json            # (optional) reviewer corrections to feed back in
 ```
 
 ### Stage independence
@@ -153,6 +179,44 @@ For MVP, a single Claude call ingests all observations and produces:
 This avoids an embedding store dependency for MVP. A future pass can replace
 the LLM clustering with embedding-based clustering once observation volume
 warrants it.
+
+### Review experience
+
+The synthesized markdown is grep-friendly but it isn't a review surface that a
+designer or PM will enjoy. The pipeline emits a self-contained HTML page,
+`outputs/review.html`, with embedded data and base64-encoded thumbnails:
+
+- A horizontal timeline strip showing where each moment sits along the recording.
+- One card per moment: thumbnail, transcript, and the observation's kind /
+  sentiment / confidence chips.
+- Inline edit controls: change the kind via dropdown, edit the summary in
+  place, suppress noise, mark items as approved.
+- Clusters and draft issues laid out below.
+
+Because the file is self-contained, reviewers can open it locally by double-
+clicking, share it by email, or host it as a static asset. No backend.
+
+### Human correction loop
+
+When a reviewer makes edits in `review.html`, the page maintains an in-memory
+overrides map. A "Download corrections" button bundles those edits into
+`overrides.json`. The reviewer drops that file into the session's `outputs/`
+directory and runs:
+
+```
+ux-intel synthesize <session-dir> --apply-overrides
+```
+
+The synthesize stage merges overrides onto the original observations
+(suppressed observations are dropped; field-level overrides are applied) and
+re-runs the synthesis call. The resulting `review.md`, `clusters.json`,
+`issues.json`, and `context.md` reflect the human-corrected truth. Cost is one
+extra synthesis call (no re-transcription, no re-analysis).
+
+This keeps the loop tight without committing to an editing daemon. A future
+iteration could persist corrections back to `observations.json` directly so
+they survive even if synthesize is never re-run, or feed them as few-shot
+examples into the analyze stage's system prompt for the next session.
 
 ### Evidence preservation
 

@@ -23,6 +23,8 @@ export OPENAI_API_KEY=sk-...           # for Whisper transcription
 
 ## Quick start
 
+### One-shot
+
 ```bash
 ux-intel run path/to/walkthrough.mp4
 ```
@@ -30,7 +32,7 @@ ux-intel run path/to/walkthrough.mp4
 This creates `sessions/<timestamp>-<id>/` and runs the full pipeline:
 
 ```
-ingest → transcribe → frames → align → analyze → synthesize
+ingest → transcribe → frames → align → analyze → synthesize → review
 ```
 
 When it finishes you'll see:
@@ -40,11 +42,52 @@ sessions/20260512-143027-a8b3f1/
   raw/                      # original input + extracted audio
   intermediates/            # transcript, frames, moments, observations
   outputs/
-    review.md               # human-readable review
+    review.md               # human-readable review (markdown)
+    review.html             # self-contained interactive review (timeline + edits)
     issues.json             # draft issues
     clusters.json           # grouped themes
     context.md              # cartridge for coding agents
 ```
+
+Open `outputs/review.html` in a browser to see screenshots aligned with
+transcripts, the moment timeline, clusters, and issue drafts. The page works
+offline — embed thumbnails are inlined as base64.
+
+### Watch a synced folder
+
+For an iPhone capture loop (record → save to iCloud/Dropbox/Drive), point the
+watcher at the synced folder:
+
+```bash
+ux-intel watch ~/Library/Mobile\ Documents/com~apple~CloudDocs/Recordings
+```
+
+The watcher polls the directory (default every 30s), waits until a new file's
+size and mtime are stable across two polls (so partial cloud uploads don't
+trigger early processing), then runs the pipeline end-to-end. Already-seen
+files are tracked in `<sessions-root>/.processed.json` so the watcher won't
+double-process if you restart it. Pass `--process-existing` to also pick up
+files that were already in the folder when the watcher started.
+
+### Human review and corrections
+
+Open `outputs/review.html`. For each observation you can:
+
+- change the kind/sentiment via dropdown
+- edit the summary inline
+- suppress noisy observations
+- mark items as explicitly approved
+
+Click **Download corrections**. Drop the resulting `overrides.json` into the
+session's `outputs/` directory, then re-synthesize:
+
+```bash
+ux-intel synthesize sessions/<id> --apply-overrides
+```
+
+The clusters, issues, review markdown, and context cartridge get rebuilt
+against the corrected observations — for the cost of one synthesis call (no
+re-transcription, no re-analysis).
 
 ## Running stages individually
 
@@ -91,7 +134,12 @@ amortizes the rubric. Writes `observations.json`.
 **synthesize** — one Claude call ingests all observations and emits clusters,
 draft issues, the review markdown, and the context cartridge. Streaming on
 because outputs can be long. Writes `clusters.json`, `issues.json`,
-`review.md`, `context.md`.
+`review.md`, `context.md`. Pass `--apply-overrides` to merge any reviewer
+corrections from `overrides.json` before synthesizing.
+
+**review** — generates `outputs/review.html`, a self-contained interactive
+review surface. Auto-runs as part of `ux-intel run`; can also be invoked
+standalone (`ux-intel review sessions/<id>`) to regenerate after edits.
 
 ## Customizing
 
@@ -132,7 +180,8 @@ These will vary with effort level, narration density, and resolution.
 - Heuristic frame extraction — works well on screen-recording footage with
   natural transitions; less reliable on scrolling-heavy content.
 - No GitHub/Linear integration. Issues are drafts in `issues.json`.
-- No web UI. The artifact directory is the surface.
+- The review experience lives in a static HTML page — corrections roundtrip
+  through a download/re-run rather than a persistent server.
 
 The architecture leaves clean room for each of these to grow — see the
 "Future expansion" section of [`DESIGN.md`](DESIGN.md).

@@ -195,6 +195,14 @@ class Session:
         return self.root / "outputs" / "context.md"
 
     @property
+    def review_html_path(self) -> Path:
+        return self.root / "outputs" / "review.html"
+
+    @property
+    def overrides_path(self) -> Path:
+        return self.root / "outputs" / "overrides.json"
+
+    @property
     def metadata_path(self) -> Path:
         return self.root / "intermediates" / "video_metadata.json"
 
