@@ -52,11 +52,14 @@ def new(video: Path, sessions_root: Path) -> None:
 @click.argument("video", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--sessions-root", type=click.Path(path_type=Path), default=Path("sessions"))
 @click.option("--effort", default="high", type=click.Choice(["low", "medium", "high", "max", "xhigh"]))
-def run(video: Path, sessions_root: Path, effort: str) -> None:
+@click.option("--local", "local_transcribe", is_flag=True, help="Use on-device faster-whisper instead of the OpenAI API.")
+@click.option("--whisper-model", default=transcribe_stage.DEFAULT_LOCAL_MODEL,
+              help="faster-whisper model size: tiny | base | small | medium | large-v3.")
+def run(video: Path, sessions_root: Path, effort: str, local_transcribe: bool, whisper_model: str) -> None:
     """Create a session for VIDEO and run the full pipeline end-to-end."""
     session = Session.create(sessions_root, video)
     click.echo(f"session: {session.root}")
-    _run_full(session, effort=effort)
+    _run_full(session, effort=effort, local_transcribe=local_transcribe, whisper_model=whisper_model)
 
 
 @cli.command()
@@ -69,9 +72,12 @@ def ingest(session_dir: Path) -> None:
 
 @cli.command()
 @click.argument("session_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
-def transcribe(session_dir: Path) -> None:
+@click.option("--local", "local_transcribe", is_flag=True, help="Use on-device faster-whisper instead of the OpenAI API.")
+@click.option("--whisper-model", default=transcribe_stage.DEFAULT_LOCAL_MODEL,
+              help="faster-whisper model size: tiny | base | small | medium | large-v3.")
+def transcribe(session_dir: Path, local_transcribe: bool, whisper_model: str) -> None:
     session = Session.load(session_dir)
-    transcript = transcribe_stage.run(session)
+    transcript = transcribe_stage.run(session, local=local_transcribe, local_model=whisper_model)
     click.echo(f"transcribe done: {len(transcript.segments)} segments")
 
 
@@ -191,11 +197,16 @@ def status(session_dir: Path) -> None:
         click.echo(f"  {marker} {stage:14s}  {rec.status.value}{suffix}{dep_note}")
 
 
-def _run_full(session: Session, effort: str) -> None:
+def _run_full(
+    session: Session,
+    effort: str,
+    local_transcribe: bool = False,
+    whisper_model: str = transcribe_stage.DEFAULT_LOCAL_MODEL,
+) -> None:
     click.echo("-> ingest")
     ingest_stage.run(session)
     click.echo("-> transcribe")
-    transcribe_stage.run(session)
+    transcribe_stage.run(session, local=local_transcribe, local_model=whisper_model)
     click.echo("-> frames")
     frames_stage.run(session)
     click.echo("-> align")

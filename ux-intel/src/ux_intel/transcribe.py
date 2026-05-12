@@ -1,8 +1,16 @@
 """Stage 2: transcribe.
 
-OpenAI Whisper API with word-level timestamps. The integration is wrapped in a
-Transcriber protocol so a local-whisper or Deepgram adapter can drop in later
-without touching the rest of the pipeline.
+Two transcription backends:
+
+  - `OpenAIWhisperTranscriber` — OpenAI Whisper API (`whisper-1`). Cheap and
+    accurate, requires an API key.
+  - `FasterWhisperTranscriber` — `faster-whisper`, runs entirely on-device
+    (CPU or GPU). No API key, no per-minute cost; just downloads the model
+    weights on first use.
+
+Both implement the `Transcriber` protocol so the rest of the pipeline doesn't
+care which one ran. Adding a third (Deepgram, AssemblyAI, local whisper.cpp)
+is a new adapter and a CLI flag.
 """
 
 from __future__ import annotations
@@ -11,10 +19,10 @@ import os
 from pathlib import Path
 from typing import Protocol
 
-from openai import OpenAI
-
 from .schemas import Transcript, TranscriptSegment, TranscriptWord
 from .session import STAGE_TRANSCRIBE, Session
+
+DEFAULT_LOCAL_MODEL = "small"
 
 
 class Transcriber(Protocol):
@@ -29,6 +37,7 @@ class OpenAIWhisperTranscriber:
     """
 
     def __init__(self, model: str = "whisper-1", api_key: str | None = None):
+        from openai import OpenAI  # imported lazily so the local backend doesn't pay the import cost
         self.model = model
         self.client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"))
 
@@ -43,11 +52,71 @@ class OpenAIWhisperTranscriber:
         return _parse_whisper_response(response)
 
 
-def run(session: Session, transcriber: Transcriber | None = None) -> Transcript:
+class FasterWhisperTranscriber:
+    """Local transcription via `faster-whisper`.
+
+    First call downloads the model to the HuggingFace cache (~250MB for the
+    default `small` model). Subsequent calls reuse the cached weights.
+    `device="auto"` will use Metal on Apple Silicon, CUDA on NVIDIA, or CPU.
+    """
+
+    def __init__(
+        self,
+        model_size: str = DEFAULT_LOCAL_MODEL,
+        device: str = "auto",
+        compute_type: str = "default",
+        language: str | None = None,
+    ):
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as exc:
+            raise ImportError(
+                "faster-whisper is not installed. "
+                "Reinstall with `pip install -e \".[local]\"` (or `pip install faster-whisper`)."
+            ) from exc
+        self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        self.model_size = model_size
+        self.language = language
+
+    def transcribe(self, audio_path: Path) -> Transcript:
+        segments_iter, info = self.model.transcribe(
+            str(audio_path),
+            word_timestamps=True,
+            language=self.language,
+        )
+        segments: list[TranscriptSegment] = []
+        full_parts: list[str] = []
+        for i, seg in enumerate(segments_iter):
+            words = [
+                TranscriptWord(word=w.word, start=float(w.start), end=float(w.end))
+                for w in (seg.words or [])
+            ]
+            text = seg.text.strip()
+            segments.append(TranscriptSegment(
+                id=i, start=float(seg.start), end=float(seg.end),
+                text=text, words=words,
+            ))
+            full_parts.append(text)
+        return Transcript(
+            language=info.language,
+            duration_s=float(info.duration),
+            segments=segments,
+            full_text=" ".join(full_parts),
+        )
+
+
+def run(
+    session: Session,
+    transcriber: Transcriber | None = None,
+    *,
+    local: bool = False,
+    local_model: str = DEFAULT_LOCAL_MODEL,
+) -> Transcript:
     session.require_dependencies(STAGE_TRANSCRIBE)
     session.mark_running(STAGE_TRANSCRIBE)
     try:
-        transcriber = transcriber or OpenAIWhisperTranscriber()
+        if transcriber is None:
+            transcriber = _default_transcriber(local=local, local_model=local_model)
         transcript = transcriber.transcribe(session.audio_path)
         session.transcript_path.write_text(transcript.model_dump_json(indent=2))
         session.transcript_text_path.write_text(transcript.full_text)
@@ -59,6 +128,18 @@ def run(session: Session, transcriber: Transcriber | None = None) -> Transcript:
     except Exception as exc:
         session.mark_failed(STAGE_TRANSCRIBE, str(exc))
         raise
+
+
+def _default_transcriber(*, local: bool, local_model: str) -> Transcriber:
+    if local:
+        return FasterWhisperTranscriber(model_size=local_model)
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise RuntimeError(
+            "No OPENAI_API_KEY set. Either export one, or re-run with --local "
+            "to use the on-device faster-whisper backend "
+            "(install with `pip install -e \".[local]\"` first)."
+        )
+    return OpenAIWhisperTranscriber()
 
 
 def _parse_whisper_response(response) -> Transcript:

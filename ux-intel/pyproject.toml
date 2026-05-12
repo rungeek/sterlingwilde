@@ -18,6 +18,11 @@ dependencies = [
     "Pillow>=10.0",
 ]
 
+[project.optional-dependencies]
+# On-device transcription with no API key. Use `pip install -e ".[local]"`.
+# faster-whisper pulls in ctranslate2 (a few hundred MB of native binaries).
+local = ["faster-whisper>=1.0"]
+
 [project.scripts]
 ux-intel = "ux_intel.cli:cli"
 

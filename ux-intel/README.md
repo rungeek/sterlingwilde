@@ -15,10 +15,24 @@ Python 3.10+ and `ffmpeg` on `PATH`.
 
 ```bash
 cd ux-intel
-pip install -e .
+pip install -e .                        # API-only install
+# or, for on-device transcription with no API key:
+pip install -e ".[local]"               # adds faster-whisper
 
-export ANTHROPIC_API_KEY=sk-ant-...
-export OPENAI_API_KEY=sk-...           # for Whisper transcription
+export ANTHROPIC_API_KEY=sk-ant-...     # always required (analysis stage)
+export OPENAI_API_KEY=sk-...            # only if you use the API transcribe backend
+```
+
+## Transcription backends
+
+Two options for the `transcribe` stage:
+
+- **OpenAI Whisper API** (default) — fast, accurate, ~$0.006/min, requires `OPENAI_API_KEY`.
+- **`faster-whisper` on-device** — no API key, runs on your CPU/GPU. First run downloads the model (~250MB for `small`). Pass `--local` to opt in.
+
+```bash
+ux-intel run video.mp4 --local                          # uses faster-whisper, model=small
+ux-intel run video.mp4 --local --whisper-model medium   # bigger / more accurate
 ```
 
 ## Quick start
