@@ -54,12 +54,30 @@ def new(video: Path, sessions_root: Path) -> None:
 @click.option("--effort", default="high", type=click.Choice(["low", "medium", "high", "max", "xhigh"]))
 @click.option("--local", "local_transcribe", is_flag=True, help="Use on-device faster-whisper instead of the OpenAI API.")
 @click.option("--whisper-model", default=transcribe_stage.DEFAULT_LOCAL_MODEL,
-              help="faster-whisper model size: tiny | base | small | medium | large-v3.")
-def run(video: Path, sessions_root: Path, effort: str, local_transcribe: bool, whisper_model: str) -> None:
+              help="faster-whisper model size: tiny | base | small | medium | large-v3 | large-v3-turbo.")
+@click.option("--whisper-device", default=None,
+              help="faster-whisper device: cpu | cuda | auto. Defaults to cpu on Apple Silicon, auto elsewhere.")
+@click.option("--whisper-compute-type", default=None,
+              help="faster-whisper compute_type: int8 | float16 | float32 | default. Defaults to int8 on Apple Silicon.")
+@click.option("--whisper-cache", default=None, type=click.Path(path_type=Path),
+              help="Override the faster-whisper download cache directory. Otherwise HF_HOME / HF_HUB_CACHE env vars apply.")
+def run(
+    video: Path, sessions_root: Path, effort: str,
+    local_transcribe: bool, whisper_model: str,
+    whisper_device: str | None, whisper_compute_type: str | None, whisper_cache: Path | None,
+) -> None:
     """Create a session for VIDEO and run the full pipeline end-to-end."""
     session = Session.create(sessions_root, video)
     click.echo(f"session: {session.root}")
-    _run_full(session, effort=effort, local_transcribe=local_transcribe, whisper_model=whisper_model)
+    _run_full(
+        session,
+        effort=effort,
+        local_transcribe=local_transcribe,
+        whisper_model=whisper_model,
+        whisper_device=whisper_device,
+        whisper_compute_type=whisper_compute_type,
+        whisper_cache=str(whisper_cache) if whisper_cache else None,
+    )
 
 
 @cli.command()
@@ -74,10 +92,26 @@ def ingest(session_dir: Path) -> None:
 @click.argument("session_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("--local", "local_transcribe", is_flag=True, help="Use on-device faster-whisper instead of the OpenAI API.")
 @click.option("--whisper-model", default=transcribe_stage.DEFAULT_LOCAL_MODEL,
-              help="faster-whisper model size: tiny | base | small | medium | large-v3.")
-def transcribe(session_dir: Path, local_transcribe: bool, whisper_model: str) -> None:
+              help="faster-whisper model size: tiny | base | small | medium | large-v3 | large-v3-turbo.")
+@click.option("--whisper-device", default=None,
+              help="faster-whisper device: cpu | cuda | auto. Defaults to cpu on Apple Silicon, auto elsewhere.")
+@click.option("--whisper-compute-type", default=None,
+              help="faster-whisper compute_type: int8 | float16 | float32 | default. Defaults to int8 on Apple Silicon.")
+@click.option("--whisper-cache", default=None, type=click.Path(path_type=Path),
+              help="Override the faster-whisper download cache directory. Otherwise HF_HOME / HF_HUB_CACHE env vars apply.")
+def transcribe(
+    session_dir: Path, local_transcribe: bool, whisper_model: str,
+    whisper_device: str | None, whisper_compute_type: str | None, whisper_cache: Path | None,
+) -> None:
     session = Session.load(session_dir)
-    transcript = transcribe_stage.run(session, local=local_transcribe, local_model=whisper_model)
+    transcript = transcribe_stage.run(
+        session,
+        local=local_transcribe,
+        local_model=whisper_model,
+        device=whisper_device,
+        compute_type=whisper_compute_type,
+        download_root=str(whisper_cache) if whisper_cache else None,
+    )
     click.echo(f"transcribe done: {len(transcript.segments)} segments")
 
 
@@ -202,11 +236,21 @@ def _run_full(
     effort: str,
     local_transcribe: bool = False,
     whisper_model: str = transcribe_stage.DEFAULT_LOCAL_MODEL,
+    whisper_device: str | None = None,
+    whisper_compute_type: str | None = None,
+    whisper_cache: str | None = None,
 ) -> None:
     click.echo("-> ingest")
     ingest_stage.run(session)
     click.echo("-> transcribe")
-    transcribe_stage.run(session, local=local_transcribe, local_model=whisper_model)
+    transcribe_stage.run(
+        session,
+        local=local_transcribe,
+        local_model=whisper_model,
+        device=whisper_device,
+        compute_type=whisper_compute_type,
+        download_root=whisper_cache,
+    )
     click.echo("-> frames")
     frames_stage.run(session)
     click.echo("-> align")

@@ -16,6 +16,7 @@ is a new adapter and a CLI flag.
 from __future__ import annotations
 
 import os
+import platform
 from pathlib import Path
 from typing import Protocol
 
@@ -23,6 +24,10 @@ from .schemas import Transcript, TranscriptSegment, TranscriptWord
 from .session import STAGE_TRANSCRIBE, Session
 
 DEFAULT_LOCAL_MODEL = "small"
+
+
+def _apple_silicon() -> bool:
+    return platform.system() == "Darwin" and platform.machine() in ("arm64", "aarch64")
 
 
 class Transcriber(Protocol):
@@ -55,17 +60,20 @@ class OpenAIWhisperTranscriber:
 class FasterWhisperTranscriber:
     """Local transcription via `faster-whisper`.
 
-    First call downloads the model to the HuggingFace cache (~250MB for the
-    default `small` model). Subsequent calls reuse the cached weights.
-    `device="auto"` will use Metal on Apple Silicon, CUDA on NVIDIA, or CPU.
+    First call downloads the model to the HuggingFace cache. Pass
+    `download_root` to override the cache location (otherwise faster-whisper
+    honors `HF_HOME` / `HF_HUB_CACHE` env vars). On Apple Silicon, default
+    `device="cpu"` + `compute_type="int8"` — CTranslate2 doesn't talk to
+    Metal directly but int8-CPU is the fast Apple-Silicon-friendly path.
     """
 
     def __init__(
         self,
         model_size: str = DEFAULT_LOCAL_MODEL,
-        device: str = "auto",
-        compute_type: str = "default",
+        device: str | None = None,
+        compute_type: str | None = None,
         language: str | None = None,
+        download_root: str | None = None,
     ):
         try:
             from faster_whisper import WhisperModel
@@ -74,7 +82,17 @@ class FasterWhisperTranscriber:
                 "faster-whisper is not installed. "
                 "Reinstall with `pip install -e \".[local]\"` (or `pip install faster-whisper`)."
             ) from exc
-        self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
+
+        # Default to the Apple-Silicon-friendly config when we detect it.
+        if device is None:
+            device = "cpu" if _apple_silicon() else "auto"
+        if compute_type is None:
+            compute_type = "int8" if _apple_silicon() else "default"
+
+        kwargs = {"device": device, "compute_type": compute_type}
+        if download_root:
+            kwargs["download_root"] = download_root
+        self.model = WhisperModel(model_size, **kwargs)
         self.model_size = model_size
         self.language = language
 
@@ -111,12 +129,21 @@ def run(
     *,
     local: bool = False,
     local_model: str = DEFAULT_LOCAL_MODEL,
+    device: str | None = None,
+    compute_type: str | None = None,
+    download_root: str | None = None,
 ) -> Transcript:
     session.require_dependencies(STAGE_TRANSCRIBE)
     session.mark_running(STAGE_TRANSCRIBE)
     try:
         if transcriber is None:
-            transcriber = _default_transcriber(local=local, local_model=local_model)
+            transcriber = _default_transcriber(
+                local=local,
+                local_model=local_model,
+                device=device,
+                compute_type=compute_type,
+                download_root=download_root,
+            )
         transcript = transcriber.transcribe(session.audio_path)
         session.transcript_path.write_text(transcript.model_dump_json(indent=2))
         session.transcript_text_path.write_text(transcript.full_text)
@@ -130,9 +157,21 @@ def run(
         raise
 
 
-def _default_transcriber(*, local: bool, local_model: str) -> Transcriber:
+def _default_transcriber(
+    *,
+    local: bool,
+    local_model: str,
+    device: str | None = None,
+    compute_type: str | None = None,
+    download_root: str | None = None,
+) -> Transcriber:
     if local:
-        return FasterWhisperTranscriber(model_size=local_model)
+        return FasterWhisperTranscriber(
+            model_size=local_model,
+            device=device,
+            compute_type=compute_type,
+            download_root=download_root,
+        )
     if not os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError(
             "No OPENAI_API_KEY set. Either export one, or re-run with --local "
