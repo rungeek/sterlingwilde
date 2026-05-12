@@ -1,0 +1,167 @@
+"""Command-line entry point.
+
+A user-facing CLI that wraps the pipeline stages. Two ways to drive it:
+
+    ux-intel run path/to/video.mp4         # run the whole pipeline
+    ux-intel new path/to/video.mp4         # create the session, run nothing
+    ux-intel ingest <session-dir>
+    ux-intel transcribe <session-dir>
+    ux-intel frames <session-dir>
+    ux-intel align <session-dir>
+    ux-intel analyze <session-dir>
+    ux-intel synthesize <session-dir>
+    ux-intel status <session-dir>
+
+Per-stage commands exist so you can iterate (re-run analyze with a tweaked
+prompt without paying for transcription twice).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import click
+
+from . import align as align_stage
+from . import analyze as analyze_stage
+from . import frames as frames_stage
+from . import ingest as ingest_stage
+from . import synthesize as synthesize_stage
+from . import transcribe as transcribe_stage
+from .session import ALL_STAGES, Session, STAGE_DEPENDENCIES
+
+
+@click.group()
+def cli() -> None:
+    """UX intelligence pipeline."""
+
+
+@cli.command()
+@click.argument("video", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--sessions-root", type=click.Path(path_type=Path), default=Path("sessions"))
+def new(video: Path, sessions_root: Path) -> None:
+    """Create a new session directory for VIDEO without running any stages."""
+    session = Session.create(sessions_root, video)
+    click.echo(session.root)
+
+
+@cli.command()
+@click.argument("video", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--sessions-root", type=click.Path(path_type=Path), default=Path("sessions"))
+@click.option("--effort", default="high", type=click.Choice(["low", "medium", "high", "max", "xhigh"]))
+def run(video: Path, sessions_root: Path, effort: str) -> None:
+    """Create a session for VIDEO and run the full pipeline end-to-end."""
+    session = Session.create(sessions_root, video)
+    click.echo(f"session: {session.root}")
+    _run_full(session, effort=effort)
+
+
+@cli.command()
+@click.argument("session_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def ingest(session_dir: Path) -> None:
+    session = Session.load(session_dir)
+    metadata = ingest_stage.run(session)
+    click.echo(f"ingest done: {metadata.duration_s:.1f}s @ {metadata.width}x{metadata.height}")
+
+
+@cli.command()
+@click.argument("session_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def transcribe(session_dir: Path) -> None:
+    session = Session.load(session_dir)
+    transcript = transcribe_stage.run(session)
+    click.echo(f"transcribe done: {len(transcript.segments)} segments")
+
+
+@cli.command()
+@click.argument("session_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--sample-fps", default=frames_stage.DEFAULT_SAMPLE_FPS, type=float)
+@click.option("--distance-threshold", default=frames_stage.DEFAULT_HASH_DISTANCE_THRESHOLD, type=int)
+@click.option("--interval-floor", default=frames_stage.DEFAULT_INTERVAL_FLOOR_S, type=float)
+def frames(
+    session_dir: Path,
+    sample_fps: float,
+    distance_threshold: int,
+    interval_floor: float,
+) -> None:
+    session = Session.load(session_dir)
+    frame_set = frames_stage.run(
+        session,
+        sample_fps=sample_fps,
+        distance_threshold=distance_threshold,
+        interval_floor_s=interval_floor,
+    )
+    click.echo(f"frames done: {len(frame_set.frames)} keyframes")
+
+
+@cli.command()
+@click.argument("session_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def align(session_dir: Path) -> None:
+    session = Session.load(session_dir)
+    moment_set = align_stage.run(session)
+    click.echo(f"align done: {len(moment_set.moments)} moments")
+
+
+@cli.command()
+@click.argument("session_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--effort", default="high", type=click.Choice(["low", "medium", "high", "max", "xhigh"]))
+def analyze(session_dir: Path, effort: str) -> None:
+    session = Session.load(session_dir)
+    obs_set = analyze_stage.run(session, effort=effort)
+    click.echo(f"analyze done: {len(obs_set.observations)} observations")
+
+
+@cli.command()
+@click.argument("session_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--effort", default="high", type=click.Choice(["low", "medium", "high", "max", "xhigh"]))
+def synthesize(session_dir: Path, effort: str) -> None:
+    session = Session.load(session_dir)
+    output = synthesize_stage.run(session, effort=effort)
+    click.echo(f"synthesize done: {len(output.clusters)} clusters, {len(output.issues)} issues")
+    click.echo(f"  review:    {session.review_path}")
+    click.echo(f"  cartridge: {session.cartridge_path}")
+
+
+@cli.command()
+@click.argument("session_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def status(session_dir: Path) -> None:
+    """Print per-stage status for the session."""
+    session = Session.load(session_dir)
+    state = session.state()
+    click.echo(f"session: {state.session_id}")
+    click.echo(f"source:  {state.source_video}")
+    click.echo(f"created: {state.created_at.isoformat()}")
+    click.echo("")
+    click.echo("stages:")
+    for stage in ALL_STAGES:
+        rec = state.stages.get(stage)
+        if rec is None:
+            click.echo(f"  {stage:14s}  unknown")
+            continue
+        marker = {"completed": "OK", "running": "..", "failed": "!!", "pending": "  "}.get(rec.status.value, "??")
+        suffix = f"  ({rec.notes})" if rec.notes else ""
+        if rec.error:
+            suffix += f"  ERROR: {rec.error}"
+        deps = STAGE_DEPENDENCIES[stage]
+        dep_note = f"  deps={','.join(deps)}" if deps else ""
+        click.echo(f"  {marker} {stage:14s}  {rec.status.value}{suffix}{dep_note}")
+
+
+def _run_full(session: Session, effort: str) -> None:
+    click.echo("-> ingest")
+    ingest_stage.run(session)
+    click.echo("-> transcribe")
+    transcribe_stage.run(session)
+    click.echo("-> frames")
+    frames_stage.run(session)
+    click.echo("-> align")
+    align_stage.run(session)
+    click.echo("-> analyze")
+    analyze_stage.run(session, effort=effort)
+    click.echo("-> synthesize")
+    synthesize_stage.run(session, effort=effort)
+    click.echo("")
+    click.echo(f"done. review: {session.review_path}")
+
+
+if __name__ == "__main__":
+    cli()
