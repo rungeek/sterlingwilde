@@ -27,6 +27,7 @@ from . import align as align_stage
 from . import analyze as analyze_stage
 from . import frames as frames_stage
 from . import ingest as ingest_stage
+from . import pack as pack_mod
 from . import review as review_mod
 from . import synthesize as synthesize_stage
 from . import transcribe as transcribe_stage
@@ -161,12 +162,67 @@ def analyze(session_dir: Path, effort: str) -> None:
     is_flag=True,
     help="If outputs/overrides.json exists, apply reviewer corrections before synthesizing.",
 )
-def synthesize(session_dir: Path, effort: str, apply_overrides: bool) -> None:
+@click.option(
+    "--from-pack",
+    is_flag=True,
+    help="Skip the API call; instead, ingest outputs/synthesis.json produced by a Claude chat/CLI session.",
+)
+@click.option(
+    "--bundle-path",
+    default=None,
+    type=click.Path(path_type=Path),
+    help="Custom path to the synthesis bundle (when used with --from-pack). Defaults to outputs/synthesis.json.",
+)
+def synthesize(
+    session_dir: Path, effort: str, apply_overrides: bool, from_pack: bool, bundle_path: Path | None,
+) -> None:
     session = Session.load(session_dir)
-    output = synthesize_stage.run(session, effort=effort, apply_overrides=apply_overrides)
-    click.echo(f"synthesize done: {len(output.clusters)} clusters, {len(output.issues)} issues")
+    if from_pack:
+        output = synthesize_stage.run_from_pack(session, bundle_path=bundle_path)
+        click.echo(f"synthesize done (from pack): {len(output.clusters)} clusters, {len(output.issues)} issues")
+    else:
+        output = synthesize_stage.run(session, effort=effort, apply_overrides=apply_overrides)
+        click.echo(f"synthesize done: {len(output.clusters)} clusters, {len(output.issues)} issues")
     click.echo(f"  review:    {session.review_path}")
     click.echo(f"  cartridge: {session.cartridge_path}")
+
+
+@cli.command()
+@click.argument("session_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--stage",
+    default="both",
+    type=click.Choice(["analyze", "synthesize", "both"]),
+    help="Which stage to pack. `both` requires observations.json to exist for the synthesize half.",
+)
+def pack(session_dir: Path, stage: str) -> None:
+    """Export a prompt pack the user can hand to Claude Code, Claude.ai chat, or `claude` CLI.
+
+    The pack is a self-contained directory under `outputs/packs/<stage>/`.
+    Read its README.md to see what to do with it. The receiving Claude
+    instance writes observations.json (for analyze) or synthesis.json (for
+    synthesize), and the pipeline picks up from there.
+
+    Use this when you don't want to spend on the Anthropic API and would rather
+    drive the LLM work through a chat or local CLI session.
+    """
+    session = Session.load(session_dir)
+    if stage in ("analyze", "both"):
+        path = pack_mod.pack_analyze(session)
+        click.echo(f"analyze pack: {path}")
+        click.echo(f"  -> hand to a Claude session; it writes {session.observations_path}")
+    if stage in ("synthesize", "both"):
+        if not session.observations_path.exists():
+            if stage == "both":
+                click.echo("(skipping synthesize pack — no observations.json yet)")
+                return
+            raise click.ClickException(
+                "No observations.json yet. Run the analyze pack first, or run `ux-intel analyze` with an API key."
+            )
+        path = pack_mod.pack_synthesize(session)
+        click.echo(f"synthesize pack: {path}")
+        click.echo(f"  -> hand to a Claude session; it writes {session.root}/outputs/synthesis.json")
+        click.echo(f"  -> then run `ux-intel synthesize {session.root} --from-pack`")
 
 
 @cli.command()

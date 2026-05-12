@@ -33,7 +33,59 @@ Two options for the `transcribe` stage:
 ```bash
 ux-intel run video.mp4 --local                          # uses faster-whisper, model=small
 ux-intel run video.mp4 --local --whisper-model medium   # bigger / more accurate
+ux-intel run video.mp4 --local --whisper-model large-v3-turbo  # if you've already cached this model
 ```
+
+On Apple Silicon the local backend defaults to `device=cpu` and `compute_type=int8`
+(the fast CTranslate2 path — Metal isn't supported directly). Elsewhere it
+defaults to `device=auto` and `compute_type=default`. Override either:
+
+```bash
+ux-intel run video.mp4 --local --whisper-device cpu --whisper-compute-type int8
+```
+
+Model cache: faster-whisper honors `HF_HOME` / `HF_HUB_CACHE` env vars. To
+keep weights off your system disk, point those at an external drive, or pass
+`--whisper-cache /Volumes/External/ml-cache`.
+
+## Running without the Anthropic API
+
+The analyze and synthesize stages normally hit Claude's API. You can opt out
+and drive those stages through a chat or local CLI session instead. The
+`pack` command emits a self-contained directory you hand to any Claude
+interface (Claude Code, Claude.ai chat, `claude` CLI). The receiving Claude
+writes the next-stage JSON, and the pipeline picks up from there.
+
+```bash
+# 1. Run the local stages
+ux-intel ingest sessions/<id>
+ux-intel transcribe sessions/<id> --local
+ux-intel frames sessions/<id>
+ux-intel align sessions/<id>
+
+# 2. Pack the analyze stage
+ux-intel pack sessions/<id> --stage analyze
+# -> outputs/packs/analyze/{README.md, rubric.md, moments.md, frames/}
+
+# 3. Hand the pack to a Claude session, e.g. from the pack directory:
+#    `claude "Read README.md and do the task."`
+#    or upload the files to Claude.ai chat.
+#    Claude writes intermediates/observations.json.
+
+# 4. Pack the synthesize stage
+ux-intel pack sessions/<id> --stage synthesize
+# -> outputs/packs/synthesize/{README.md, rubric.md, observations.json}
+
+# 5. Same — hand to Claude, which writes outputs/synthesis.json.
+
+# 6. Finalize without calling the API:
+ux-intel synthesize sessions/<id> --from-pack
+ux-intel review    sessions/<id>
+```
+
+The pack directory's README.md is the authoritative spec for the receiving
+Claude — it explains the output schema, the output path, and the rubric. Any
+Claude that can read files and produce JSON can drive this.
 
 ## Quick start
 

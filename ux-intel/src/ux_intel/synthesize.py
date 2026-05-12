@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import anthropic
 
@@ -84,6 +85,44 @@ SYNTHESIS_SCHEMA = {
         "review_markdown", "context_cartridge_markdown",
     ],
 }
+
+
+def run_from_pack(session: Session, bundle_path: Path | None = None) -> SynthesisOutput:
+    """Finalize the synthesize stage from a `synthesis.json` bundle produced
+    by a Claude session (chat or CLI). No API call — just split the bundle
+    into the four artifact files the rest of the pipeline expects.
+    """
+    session.require_dependencies(STAGE_SYNTHESIZE)
+    bundle_path = bundle_path or (session.root / "outputs" / "synthesis.json")
+    if not bundle_path.exists():
+        raise FileNotFoundError(
+            f"No synthesis bundle at {bundle_path}. Run `ux-intel pack <session> "
+            "--stage synthesize`, hand the pack to a Claude instance, then write "
+            "its output to that path."
+        )
+    session.mark_running(STAGE_SYNTHESIZE)
+    try:
+        result = json.loads(bundle_path.read_text())
+        clusters = [Cluster.model_validate(c) for c in result["clusters"]]
+        issues = [IssueDraft.model_validate(i) for i in result["issues"]]
+        output = SynthesisOutput(
+            clusters=clusters,
+            issues=issues,
+            review_markdown=result["review_markdown"],
+            context_cartridge_markdown=result["context_cartridge_markdown"],
+        )
+        write_json(session.clusters_path, {"clusters": [c.model_dump() for c in clusters]})
+        write_json(session.issues_path, {"issues": [i.model_dump() for i in issues]})
+        session.review_path.write_text(output.review_markdown)
+        session.cartridge_path.write_text(output.context_cartridge_markdown)
+        session.mark_completed(
+            STAGE_SYNTHESIZE,
+            notes=f"{len(clusters)} clusters, {len(issues)} draft issues (from pack)",
+        )
+        return output
+    except Exception as exc:
+        session.mark_failed(STAGE_SYNTHESIZE, str(exc))
+        raise
 
 
 def run(
